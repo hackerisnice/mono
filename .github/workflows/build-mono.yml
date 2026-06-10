@@ -1,0 +1,42 @@
+name: Build Unity 5.4 Mono for Android
+
+on:
+  workflow_dispatch: # 允许你在 GitHub 网页端手动点击按钮来触发编译
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04 # 5.4 版本太老了，建议用旧版的 Ubuntu 20.04 环境，兼容性更好
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        # 因为你把 workflow 写在了 unity-5.4 分支下，它会自动拉取该分支的代码
+
+      - name: Install Dependencies (安装依赖)
+        # Unity 5.x 的 Mono 编译依赖一些老牌的 Linux C/C++ 工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake libtool bison gettext perl python2 curl unzip
+
+      - name: Download and Setup NDK r10e (下载极其重要的远古版NDK)
+        run: |
+          cd /home/runner
+          # 提取 Google 官方的 NDK r10e
+          curl -O https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip
+          unzip -q android-ndk-r10e-linux-x86_64.zip
+          # 设置环境变量，Unity 官方的编译脚本强制要求这个变量
+          echo "ANDROID_NDK_ROOT=/home/runner/android-ndk-r10e" >> $GITHUB_ENV
+
+      - name: Build Mono Runtime (核心编译)
+        run: |
+          # 针对 Unity 5.3/5.4/5.5 的标准自动编译脚本
+          chmod +x external/buildscripts/build_runtime_android.sh
+          ./external/buildscripts/build_runtime_android.sh
+
+      - name: Upload libmono.so Artifact (打包上传编译产物)
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-5.4-android-mono
+          # 编译出来的文件通常放在 builds/embedruntimes/android 目录下
+          path: builds/embedruntimes/android/
+
