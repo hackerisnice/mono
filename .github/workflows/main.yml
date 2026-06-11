@@ -12,21 +12,31 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Build in Ubuntu 20.04 Container
-        # 用单引号把命令包起来，并且用 $PWD 代替 GitHub 的表达式，彻底杜绝语法冲突
         run: |
           docker run --rm -v "$PWD":/work -w /work ubuntu:20.04 bash -c '
             export DEBIAN_FRONTEND=noninteractive
             
+            # 1. 安装基础依赖，必须加上 curl 和 unzip，以及 perl 的 LWP 模块防止它乱叫
             apt-get update && apt-get install -y \
-              build-essential autoconf automake libtool bison gettext perl python2 gcc-9 g++-9
+              build-essential autoconf automake libtool bison gettext perl python2 gcc-9 g++-9 \
+              curl unzip libwww-perl
             
             ln -sf /usr/bin/python2 /usr/bin/python
             
             update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100
             update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 100
             
-            export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk-bundle
+            # 2. 【核心修复】在容器内部，手动下载 Google 官方纯 64 位的 NDK r10e
+            # 把它解压到 /opt/android-ndk-r10e，不给 Unity 脚本自己瞎下载的机会
+            mkdir -p /opt
+            cd /opt
+            curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip
+            unzip -q android-ndk-r10e-linux-x86_64.zip
             
+            # 3. 强行设定环境变量，死死指向这个绝对正确的 64位 NDK 路径
+            export ANDROID_NDK_ROOT=/opt/android-ndk-r10e
+            
+            # 4. 回到工作目录，开始编译
             cd /work
             chmod +x external/buildscripts/build_runtime_android.sh
             ./external/buildscripts/build_runtime_android.sh
