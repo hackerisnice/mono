@@ -1,0 +1,113 @@
+name: Build Unity 5.4 Mono for Android via Linux (Ubuntu Native)
+
+on:
+  workflow_dispatch: # 允许在 GitHub 网页端手动点击按钮触发运行
+
+jobs:
+  build:
+    # 使用最新、资源极大丰富、秒进构建不排队的 Linux 宿主机
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Modern Python 3
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # ---------- 对应教程 1：安装 Linux 交叉编译依赖与 Multilib 环境 ----------
+      - name: Install Linux Build Utilities & Multilib
+        run: |
+          sudo apt-get update
+          # 核心：必须安装 gcc-9-multilib/g++-9-multilib（对应教程中勾选 multilib 的操作）
+          # 这能让 64位系统原生具备 32位交叉编译器的链接能力
+          sudo apt-get install -y \
+            build-essential autoconf automake libtool bison gettext perl curl unzip git \
+            gcc-9 g++-9 gcc-9-multilib g++-9-multilib lib32z1
+
+      - name: Setup GCC 9 Alternative
+        # 强制将系统默认编译器切回兼容远古代码的 GCC 9 模式
+        run: |
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 100
+          gcc --version
+
+      # ---------- 对应教程 3：下载并配置 Linux 版 NDK r10e ----------
+      - name: Download and Setup NDK r10e (Linux 64-bit)
+        run: |
+          # 在当前用户拥有 100% 读写权限的 $HOME 目录下创建并解压
+          mkdir -p $HOME/ndk
+          cd $HOME/ndk
+          curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip
+          unzip -q android-ndk-r10e-linux-x86_64.zip
+          
+          # 将绝对正确的 NDK 路径注入全局环境变量
+          echo "ANDROID_NDK_ROOT=$HOME/ndk/android-ndk-r10e" >> $GITHUB_ENV
+
+      # ---------- 全套硬核 Patch 补丁（保持环境判定与代码零污染） ----------
+      - name: Apply Comprehensive Patches
+        run: |
+          # 1. 教程级修改：替换 -g 为 -O2 优化体积
+          sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
+          
+          # 2. 教程级修改：强制死锁环境判定为 linux，并强行阻断 PrepareAndroidSDK.pm 的内鬼自动下载器
+          # 这样它就会乖乖去读取我们上面下载好的 $ANDROID_NDK_ROOT
+          sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "linux";/g' external/buildscripts/PrepareAndroidSDK.pm
+          sed -i 's/$OEXT = "so";/$OEXT = "so";/g' external/buildscripts/PrepareAndroidSDK.pm
+          sed -i 's/$EXEEXT = "";/$EXEEXT = "";/g' external/buildscripts/PrepareAndroidSDK.pm
+          
+          # 3. Krait 路径修复（打通本地路径映射）
+          find . -type f \( -name "*.sh" -o -name "*.pm" -o -name "Makefile*" \) -exec sed -i \
+            's|CWD/\.\./\.\./androidkraitsignalhandler/build|$PWD/android_krait_signal_handler/build|g' {} \;
+          find . -type f -exec sed -i \
+            's|\(KRAIT_PATCH_PATH\s*=\s*\)"CWD/\.\./\.\./androidkraitsignalhandler/build"|\1"$PWD/android_krait_signal_handler/build"|g' {} \;
+          
+          # 4. 统一 NDK 版本为 r10e 拦截
+          sed -i 's/GetAndroidSDK(undef, undef, "r13b")/GetAndroidSDK(undef, undef, "r10e")/g' \
+            external/buildscripts/PrepareAndroidSDK.pm
+          
+          # 5. 平台宏修复
+          find . -name "*.h" -o -name "*.c" | xargs sed -i 's/#ifdef _WIN32/#if defined(_WIN32) \&\& !defined(TARGET_ANDROID)/g'
+          echo '#define HOST_ANDROID 1' >> mono/utils/mono-publib.h
+          echo '#define TARGET_ANDROID 1' >> mono/utils/mono-publib.h
+          
+          # 6. pthread 链接修复
+          find . -name "Makefile" -o -name "*.mk" | xargs sed -i 's/-lpthread//g'
+          sed -i 's/-lpthread//g' external/buildscripts/build_runtime_android.sh
+          
+          # 7. SystemTap 探针移除
+          find . -name "*.c" -exec sed -i 's/#include <sys\/sdt.h>/\/* #include <sys\/sdt.h> *\//g' {} \;
+          find . -name "*.c" -exec sed -i 's/ STAP_PROBE[^(]*([^;]*);//g' {} \;
+          echo 'int main() { return 0; }' > mono/profiler/profiler-stap.c
+          
+          # 8. Android 日志库与动态加载库链接补全
+          find . -name "Makefile" | xargs sed -i 's/LIBS = /LIBS = -llog -ldl /g'
+          sed -i 's/-shared -Wl/-shared -Wl,--no-undefined -llog -ldl/g' external/buildscripts/build_runtime_android.sh
+
+      # ---------- 解决旧版 autopoint 本地文件冲突的防御机制 ----------
+      - name: Hack Autopoint Force Flag
+        run: |
+          mkdir -p $HOME/fake_bin
+          echo '#!/bin/bash' > $HOME/fake_bin/autopoint
+          echo '/usr/bin/autopoint --force "$@"' >> $HOME/fake_bin/autopoint
+          chmod +x $HOME/fake_bin/autopoint
+          echo "$HOME/fake_bin" >> $GITHUB_PATH
+
+      # ---------- 执行编译 ----------
+      - name: Execute Linux Build Suite
+        run: |
+          # 提前创建好输出目录，并确保环境路径被刷入
+          mkdir -p builds/embedruntimes/android
+          
+          chmod +x external/buildscripts/build_runtime_android.sh
+          ./external/buildscripts/build_runtime_android.sh
+
+      # ---------- 上传产物 ----------
+      - name: Upload libmono.so Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-5.4-android-linux-mono
+          # 抓取整个 builds 文件夹，确保任何编译生成的 .so 变体一网打尽
+          path: builds/
