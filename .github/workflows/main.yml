@@ -5,7 +5,6 @@ on:
 
 jobs:
   build:
-    # 使用资源最大、完全不排队的 Windows 宿主机
     runs-on: windows-latest
 
     steps:
@@ -17,30 +16,26 @@ jobs:
         with:
           python-version: '3.x'
 
-      # ---------- NDK 安装（修复权限：改用绝对安全的当前工作目录） ----------
+      # ---------- NDK 安装（保持当前工作区路径） ----------
       - name: Download and Setup NDK r10e (Windows 64位版)
         shell: powershell
         run: |
-          # 在当前完全可读写的工作流目录下创建 ndk 文件夹
           New-Item -ItemType Directory -Force -Path "ndk"
           cd ndk
-          
-          # 下载官方专为 Windows 准备的 NDK r10e
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r10e-windows-x86_64.zip" -OutFile "ndk.zip"
           Expand-Archive -Path "ndk.zip" -DestinationPath "." -Force
           
-          # 动态获取当前物理绝对路径，并安全注入到全局环境变量
           $NdkAbsolutePath = Resolve-Path "android-ndk-r10e"
           echo "ANDROID_NDK_ROOT=$NdkAbsolutePath" >> $env:GITHUB_ENV
 
-      # ---------- 全套硬核 Patch 补丁（保持环境判定欺骗） ----------
+      # ---------- 全套硬核 Patch 补丁 ----------
       - name: Apply Comprehensive Patches
         shell: bash
         run: |
-          # 1. 教程级修改：替换 -g 为 -O2 优化体积
+          # 1. 替换 -g 为 -O2 优化体积
           sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
           
-          # 2. 教程级修改：欺骗环境判定为 windows，跳过自动下载，吃本地 NDK
+          # 2. 欺骗环境判定为 windows
           sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "windows";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$OEXT = "so";/$OEXT = "dll";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$EXEEXT = "";/$EXEEXT = ".exe";/g' external/buildscripts/PrepareAndroidSDK.pm
@@ -73,21 +68,31 @@ jobs:
           find . -name "Makefile" | xargs sed -i 's/LIBS = /LIBS = -llog -ldl /g'
           sed -i 's/-shared -Wl/-shared -Wl,--no-undefined -llog -ldl/g' external/buildscripts/build_runtime_android.sh
 
-      # ---------- 执行编译（移交至专业的 MSYS2 交叉工具链） ----------
+      # ---------- 执行编译（核心修复：路径对齐） ----------
       - name: Execute Windows Build Suite
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: false
           install: make gcc bison
-          path-type: inherit # 关键：继承刚才通过 Resolve-Path 获取的工作区 NDK 路径
+          path-type: inherit
           run: |
+            # 【核心核心修复】将 Windows 的 NDK 路径强制转换成 MSYS2 认识的类 Linux 路径
+            # 比如将 C:\ndk\... 转换为 /c/ndk/...
+            export ANDROID_NDK_ROOT=$(cygpath -u "$ANDROID_NDK_ROOT")
+            echo "Converted NDK Path for MSYS2: $ANDROID_NDK_ROOT"
+            
+            # 提前强制创建好输出目录，防止脚本因为权限或软链接问题创建失败
+            mkdir -p builds/embedruntimes/android
+            
+            # 开始编译
             chmod +x external/buildscripts/build_runtime_android.sh
             ./external/buildscripts/build_runtime_android.sh
 
-      # ---------- 上传产物 ----------
+      # ---------- 上传产物（扩大抓取范围，确保不错过任何生成的 so） ----------
       - name: Upload libmono.so Artifact
         uses: actions/upload-artifact@v4
         with:
           name: unity-5.4-android-windows-mono
-          path: builds/embedruntimes/android/
+          # 扩大匹配范围到整个 builds 文件夹，不管它吐在哪个子目录下，直接一网打尽
+          path: builds/
