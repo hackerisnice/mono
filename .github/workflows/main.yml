@@ -5,9 +5,7 @@ on:
 
 jobs:
   build:
-    # 关键点 1：使用 macos-15 Intel 原生架构 runner
     runs-on: macos-15
-    # 关键点 2：显式声明架构为 x64
     strategy:
       matrix:
         arch: [x64]
@@ -21,19 +19,22 @@ jobs:
         with:
           python-version: '3.x'
 
-      # 关键点 3：NDK r10e 原生二进制可在 Intel 环境下直接运行
+      # ============================================================
+      # 修正点：更换为稳定的 .zip 链接，并适配其解压方式
+      # ============================================================
       - name: Download and Setup NDK r10e (macOS Intel 64-bit)
         shell: bash
         run: |
           mkdir -p ~/ndk
           cd ~/ndk
-          curl -L -o android-ndk-r10e-darwin-x86_64.bin \
-            "https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.bin"
-          chmod +x android-ndk-r10e-darwin-x86_64.bin
-          ./android-ndk-r10e-darwin-x86_64.bin
+          # 链接已从 .bin 更换为 .zip
+          curl -L -o android-ndk-r10e-darwin-x86_64.zip \
+            "https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.zip"
+          # 解压 .zip 文件
+          unzip -q android-ndk-r10e-darwin-x86_64.zip
           echo "ANDROID_NDK_ROOT=~/ndk/android-ndk-r10e" >> $GITHUB_ENV
 
-      # 以下所有 'sed' 修复逻辑与 Windows 版完全一致，仅调整了 HOST_ENV 为 darwin
+      # 以下所有 'sed' 修复逻辑保持不变，仅调整了 HOST_ENV 为 darwin
       - name: Match Tutorial Modifications (macOS sed syntax)
         shell: bash
         run: |
@@ -68,11 +69,10 @@ jobs:
           find . -name "Makefile" | xargs sed -i '' 's/LIBS = /LIBS = -llog -ldl /g'
           sed -i '' 's/-shared -Wl/-shared -Wl,--no-undefined -llog -ldl/g' external/buildscripts/build_runtime_android.sh
 
-      - name: Execute macOS Build Suite (利用预装工具链)
+      - name: Execute macOS Build Suite
         shell: bash
         run: |
           chmod +x external/buildscripts/build_runtime_android.sh
-          # 不手动安装 make/gcc/bison，利用 macOS 15 Intel 预装的 GNU 工具链
           ./external/buildscripts/build_runtime_android.sh
 
       - name: Upload libmono.so Artifact
