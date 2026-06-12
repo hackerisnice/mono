@@ -1,125 +1,93 @@
-name: Build Unity 5.4 Mono for Android via macOS Intel (Fully Patched)
+name: Build Unity 5.4 Mono for Android via Windows (Fully Patched Suite)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-15
-    strategy:
-      matrix:
-        arch: [x64]
+    # 使用资源最大、完全不排队的 Windows 宿主机
+    runs-on: windows-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Python 3
+      - name: Setup Modern Python 3
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      # ---------- NDK 安装 ----------
-      - name: Create NDK directory
-        shell: bash
-        run: mkdir -p ~/ndk
+      # ---------- NDK 安装（修复权限：改用绝对安全的当前工作目录） ----------
+      - name: Download and Setup NDK r10e (Windows 64位版)
+        shell: powershell
+        run: |
+          # 在当前完全可读写的工作流目录下创建 ndk 文件夹
+          New-Item -ItemType Directory -Force -Path "ndk"
+          cd ndk
+          
+          # 下载官方专为 Windows 准备的 NDK r10e
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r10e-windows-x86_64.zip" -OutFile "ndk.zip"
+          Expand-Archive -Path "ndk.zip" -DestinationPath "." -Force
+          
+          # 动态获取当前物理绝对路径，并安全注入到全局环境变量
+          $NdkAbsolutePath = Resolve-Path "android-ndk-r10e"
+          echo "ANDROID_NDK_ROOT=$NdkAbsolutePath" >> $env:GITHUB_ENV
 
-      - name: Download NDK r10e (ZIP)
+      # ---------- 全套硬核 Patch 补丁（保持环境判定欺骗） ----------
+      - name: Apply Comprehensive Patches
         shell: bash
         run: |
-          cd ~/ndk
-          curl -L -o android-ndk-r10e-darwin-x86_64.zip \
-            "https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.zip"
-          unzip -q android-ndk-r10e-darwin-x86_64.zip
-
-      - name: Set ANDROID_NDK_ROOT
-        shell: bash
-        run: echo "ANDROID_NDK_ROOT=~/ndk/android-ndk-r10e" >> $GITHUB_ENV
-
-      # ---------- 教程级修改 ----------
-      - name: Patch 1/5: Replace -g with -O2
-        shell: bash
-        run: sed -i '' 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
-
-      - name: Patch 2/5: Fake HOST_ENV to "darwin"
-        shell: bash
-        run: sed -i '' 's/$HOST_ENV = "linux";/$HOST_ENV = "darwin";/g' external/buildscripts/PrepareAndroidSDK.pm
-
-      - name: Patch 3/5: Change shared object extension to dylib
-        shell: bash
-        run: sed -i '' 's/$OEXT = "so";/$OEXT = "dylib";/g' external/buildscripts/PrepareAndroidSDK.pm
-
-      - name: Patch 4/5: Keep EXEEXT empty
-        shell: bash
-        run: sed -i '' 's/$EXEEXT = "";/$EXEEXT = "";/g' external/buildscripts/PrepareAndroidSDK.pm
-
-      # ---------- Krait 路径修复（你的解法）----------
-      - name: Hotfix KRAIT_PATCH_PATH - Remove wrong '../..'
-        shell: bash
-        run: |
-          find . -type f \( -name "*.sh" -o -name "*.pm" -o -name "Makefile*" \) -exec sed -i '' \
+          # 1. 教程级修改：替换 -g 为 -O2 优化体积
+          sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
+          
+          # 2. 教程级修改：欺骗环境判定为 windows，跳过自动下载，吃本地 NDK
+          sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "windows";/g' external/buildscripts/PrepareAndroidSDK.pm
+          sed -i 's/$OEXT = "so";/$OEXT = "dll";/g' external/buildscripts/PrepareAndroidSDK.pm
+          sed -i 's/$EXEEXT = "";/$EXEEXT = ".exe";/g' external/buildscripts/PrepareAndroidSDK.pm
+          
+          # 3. Krait 路径修复
+          find . -type f \( -name "*.sh" -o -name "*.pm" -o -name "Makefile*" \) -exec sed -i \
             's|CWD/\.\./\.\./androidkraitsignalhandler/build|$PWD/android_krait_signal_handler/build|g' {} \;
-          find . -type f -exec sed -i '' \
+          find . -type f -exec sed -i \
             's|\(KRAIT_PATCH_PATH\s*=\s*\)"CWD/\.\./\.\./androidkraitsignalhandler/build"|\1"$PWD/android_krait_signal_handler/build"|g' {} \;
-
-      # ---------- 统一 NDK 版本为 r10e ----------
-      - name: Hotfix NDK version - Force r10e instead of r13b
-        shell: bash
-        run: |
-          sed -i '' 's/GetAndroidSDK(undef, undef, "r13b")/GetAndroidSDK(undef, undef, "r10e")/g' \
+          
+          # 4. 统一 NDK 版本为 r10e 拦截
+          sed -i 's/GetAndroidSDK(undef, undef, "r13b")/GetAndroidSDK(undef, undef, "r10e")/g' \
             external/buildscripts/PrepareAndroidSDK.pm
-
-      # ---------- 平台宏修复 ----------
-      - name: Hotfix A: Force Android platform macros
-        shell: bash
-        run: |
-          find . -name "*.h" -o -name "*.c" | xargs sed -i '' 's/#ifdef _WIN32/#if defined(_WIN32) \&\& !defined(TARGET_ANDROID)/g'
+          
+          # 5. 平台宏修复
+          find . -name "*.h" -o -name "*.c" | xargs sed -i 's/#ifdef _WIN32/#if defined(_WIN32) \&\& !defined(TARGET_ANDROID)/g'
           echo '#define HOST_ANDROID 1' >> mono/utils/mono-publib.h
           echo '#define TARGET_ANDROID 1' >> mono/utils/mono-publib.h
+          
+          # 6. pthread 链接修复
+          find . -name "Makefile" -o -name "*.mk" | xargs sed -i 's/-lpthread//g'
+          sed -i 's/-lpthread//g' external/buildscripts/build_runtime_android.sh
+          
+          # 7. SystemTap 探针移除
+          find . -name "*.c" -exec sed -i 's/#include <sys\/sdt.h>/\/* #include <sys\/sdt.h> *\//g' {} \;
+          find . -name "*.c" -exec sed -i 's/ STAP_PROBE[^(]*([^;]*);//g' {} \;
+          echo 'int main() { return 0; }' > mono/profiler/profiler-stap.c
+          
+          # 8. Android 日志库与动态加载库链接补全
+          find . -name "Makefile" | xargs sed -i 's/LIBS = /LIBS = -llog -ldl /g'
+          sed -i 's/-shared -Wl/-shared -Wl,--no-undefined -llog -ldl/g' external/buildscripts/build_runtime_android.sh
 
-      # ---------- pthread 链接修复 ----------
-      - name: Hotfix B: Remove -lpthread from Makefiles
-        shell: bash
-        run: find . -name "Makefile" -o -name "*.mk" | xargs sed -i '' 's/-lpthread//g'
-
-      - name: Hotfix B2: Remove -lpthread from build script
-        shell: bash
-        run: sed -i '' 's/-lpthread//g' external/buildscripts/build_runtime_android.sh
-
-      # ---------- SystemTap 探针移除 ----------
-      - name: Hotfix C: Comment out sys/sdt.h includes
-        shell: bash
-        run: find . -name "*.c" -exec sed -i '' 's/#include <sys\/sdt.h>/\/* #include <sys\/sdt.h> *\//g' {} \;
-
-      - name: Hotfix C2: Remove STAP_PROBE macros
-        shell: bash
-        run: find . -name "*.c" -exec sed -i '' 's/ STAP_PROBE[^(]*([^;]*);//g' {} \;
-
-      - name: Hotfix C3: Nuke profiler-stap.c
-        shell: bash
-        run: echo 'int main() { return 0; }' > mono/profiler/profiler-stap.c
-
-      # ---------- Android 日志库与动态加载库链接 ----------
-      - name: Hotfix D: Add -llog -ldl to Makefiles
-        shell: bash
-        run: find . -name "Makefile" | xargs sed -i '' 's/LIBS = /LIBS = -llog -ldl /g'
-
-      - name: Hotfix D2: Add linker flags in build script
-        shell: bash
-        run: sed -i '' 's/-shared -Wl/-shared -Wl,--no-undefined -llog -ldl/g' external/buildscripts/build_runtime_android.sh
-
-      # ---------- 执行编译 ----------
-      - name: Make build script executable
-        shell: bash
-        run: chmod +x external/buildscripts/build_runtime_android.sh
-
-      - name: Execute Build Suite
-        shell: bash
-        run: ./external/buildscripts/build_runtime_android.sh
+      # ---------- 执行编译（移交至专业的 MSYS2 交叉工具链） ----------
+      - name: Execute Windows Build Suite
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: make gcc bison
+          path-type: inherit # 关键：继承刚才通过 Resolve-Path 获取的工作区 NDK 路径
+          run: |
+            chmod +x external/buildscripts/build_runtime_android.sh
+            ./external/buildscripts/build_runtime_android.sh
 
       # ---------- 上传产物 ----------
-      - name: Upload libmono.so artifact
+      - name: Upload libmono.so Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unity-5.4-android-macos-intel-mono
+          name: unity-5.4-android-windows-mono
           path: builds/embedruntimes/android/
