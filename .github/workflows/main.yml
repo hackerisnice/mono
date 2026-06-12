@@ -1,49 +1,63 @@
 name: Build Unity 5.4 Mono for Android via CentOS
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许在 GitHub 网页端手动点击按钮触发运行
 
 jobs:
   build:
-    runs-on: ubuntu-latest # 宿主机依然用最快不排队的 ubuntu-latest
+    runs-on: ubuntu-latest # 宿主机使用最快不排队的 ubuntu-latest
     
-    # 核心黑魔法：让整个 Job 直接原生运行在 CentOS 7 容器内
+    # 将整个 Job 原生运行在 CentOS 7 容器内，天然具备 Python 2 环境
     container:
       image: centos:7
 
     steps:
-      - name: Install Base Utilities (CentOS 基础工具与 32 位运行库)
-        # CentOS 7 自带标准的 Python 2.7 (通过 python 命令直接调用)
-        # 同时安装 glibc.i686 以防 NDK 内部的 32 位老二进制文件报 No such file
+      - name: Fix CentOS 7 EOL Repos & Install Utilities (修复死源并安装32位环境)
         run: |
+          # 1. 清理旧源，强行切到阿里云的 CentOS 7 Vault 历史归档源
+          rm -f /etc/yum.repos.d/*.repo
+          curl -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-7.repo
+          
+          # 2. 修改配置文件，全面指向 vault 历史服务器
+          sed -i -e 's/mirrorlist/#mirrorlist/g' \
+                 -e 's/http:\/\/mirror.centos.org/https:\/\/mirrors.aliyun.com/g' \
+                 /etc/yum.repos.d/CentOS-Base.repo
+          
+          # 3. 清理缓存并重建
+          yum clean all
           yum makecache fast
+          
+          # 4. 安装基础编译工具链
+          # 核心安装 glibc.i686 等 32 位库，确保老旧 NDK 内部的 32 位二进制文件不会报 No such file
           yum install -y \
-            gawk make gcc gcc-c++ autoconf automake libtool bison gettext perl curl unzip \
+            gawk make gcc gcc-c++ autoconf automake libtool bison gettext perl curl unzip git \
             glibc.i686 zlib.i686 libstdc++.i686
 
       - name: Checkout Code
-        # 在自定义 container 中使用 checkout，GitHub 会自动处理好容器内的 git 环境
+        # 使用官方 Action 拉取代码，它会自动适配 CentOS 容器内的 git 路径
         uses: actions/checkout@v4
 
       - name: Download and Setup NDK r10e
+        # 手动下载 64 位标准 NDK r10e 并解压，堵死 Unity 脚本内部瞎下载 32 位旧包的后路
         run: |
           mkdir -p /opt
           cd /opt
-          # 下载 64 位 NDK（兼容 CentOS 宿主机，且内部 32 位组件已被上面的 i686 库激活）
           curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip
           unzip -q android-ndk-r10e-linux-x86_64.zip
           
-          # 写入环境变量到全局环境
+          # 将环境变量注入到 GitHub Actions 全局上下文
           echo "ANDROID_NDK_ROOT=/opt/android-ndk-r10e" >> $GITHUB_ENV
 
       - name: Build Mono Runtime
+        # 此时位于拉取出来的 mono 源码根目录，直接执行 Unity 5.4 的标准 Android 编译脚本
         run: |
-          # 此时已经在 CentOS 根目录，且 checkout 出来的代码就在当前工作路径下
           chmod +x external/buildscripts/build_runtime_android.sh
           ./external/buildscripts/build_runtime_android.sh
 
-      - name: Upload libmono.so Artifact
+      - name: Upload libmono.so Artifact (收割产物)
+        # 编译完成后，将生成的 Android so 库打包上传
         uses: actions/upload-artifact@v4
         with:
           name: unity-5.4-android-mono
+          # Unity 编译输出的标准相对路径
           path: builds/embedruntimes/android/
