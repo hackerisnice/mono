@@ -1,4 +1,4 @@
-name: Build Unity 5.4 Mono for Android via macOS Intel (Fully Patched)
+name: Build Unity 5.4 Mono for Android via macOS Intel
 
 on:
   workflow_dispatch:
