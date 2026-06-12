@@ -1,43 +1,46 @@
 name: Build Unity 5.4 Mono for Android via macOS
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许在 GitHub 网页端手动点击按钮触发运行
 
 jobs:
   build:
-    # 【核心修改】换成最新且官方完全支持的 Intel 架构 macOS 15 镜像
-    # 资源极大丰富，点击后直接秒进构建，绝不排队！
+    # 使用目前官方主力维护、资源充足且完全不排队的 Intel 架构 macOS 15 镜像
     runs-on: macos-15-intel
 
     steps:
       - name: Checkout Code
+        # 使用官方 Action 拉取代码到工作目录
         uses: actions/checkout@v4
 
       - name: Install Dependencies via Homebrew (安装 macOS 编译依赖)
-        # 现代 macOS 环境通过新版 brew 快速补齐远古 autotools 链
+        # 通过 macOS 默认的 Homebrew 快速补齐远古 autotools 编译链
         run: |
           brew install autoconf automake libtool gettext pidof
-          # 将 gettext 的路径强行塞进环境变量，防止老脚本报错找不到 msgfmt
+          # 将 gettext 的二进制路径强行塞进全局环境变量，防止老脚本报错找不到 msgfmt
           echo "/usr/local/opt/gettext/bin" >> $GITHUB_PATH
 
-      - name: Download and Setup NDK r10e
-        # 下载官方纯正的 macOS (Darwin) 64位 NDK 压缩包
+      - name: Download and Setup NDK r10e (权限无缝版)
+        # 彻底放弃受系统保护的 /opt 目录，改在当前用户拥有 100% 读写权限的 $HOME（家目录）下操作
         run: |
-          mkdir -p /opt
-          cd /opt
+          mkdir -p $HOME/ndk
+          cd $HOME/ndk
           curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.zip
           unzip -q android-ndk-r10e-darwin-x86_64.zip
           
-          # 注入 NDK 环境变量到全局，Unity 脚本会自动抓取
-          echo "ANDROID_NDK_ROOT=/opt/android-ndk-r10e" >> $GITHUB_ENV
+          # 将绝对正确的 NDK 路径动态注入到 GitHub Actions 全局上下文
+          echo "ANDROID_NDK_ROOT=$HOME/ndk/android-ndk-r10e" >> $GITHUB_ENV
 
-      - name: Build Mono Runtime (编译)
+      - name: Build Mono Runtime (核心编译)
+        # 此时位于拉取出来的 mono 源码根目录，直接执行 Unity 5.4 的标准 Android 编译脚本
         run: |
           chmod +x external/buildscripts/build_runtime_android.sh
           ./external/buildscripts/build_runtime_android.sh
 
       - name: Upload libmono.so Artifact (收割产物)
+        # 编译完成后，将生成的 Android so 库打包上传供手机端下载
         uses: actions/upload-artifact@v4
         with:
           name: unity-5.4-android-mono
+          # Unity 编译输出的标准相对路径
           path: builds/embedruntimes/android/
