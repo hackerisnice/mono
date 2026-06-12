@@ -5,34 +5,34 @@ on:
 
 jobs:
   build:
-    # 使用 macOS 13 环境，对老旧工具链和 32 位交叉编译组件兼容性极佳
-    runs-on: macos-13
+    # 【核心修改】换成最新且官方完全支持的 Intel 架构 macOS 15 镜像
+    # 资源极大丰富，点击后直接秒进构建，绝不排队！
+    runs-on: macos-15-intel
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Install Dependencies via Homebrew (安装 macOS 编译依赖)
-        # macOS 默认自带 perl。我们通过 brew 补齐 automake 系列工具
+        # 现代 macOS 环境通过新版 brew 快速补齐远古 autotools 链
         run: |
           brew install autoconf automake libtool gettext pidof
-          # 将 gettext 加入环境变量路径，防止老脚本找不到 msgfmt
+          # 将 gettext 的路径强行塞进环境变量，防止老脚本报错找不到 msgfmt
           echo "/usr/local/opt/gettext/bin" >> $GITHUB_PATH
 
       - name: Download and Setup NDK r10e
-        # 直接下载 macOS 版本的 NDK r10e
+        # 下载官方纯正的 macOS (Darwin) 64位 NDK 压缩包
         run: |
           mkdir -p /opt
           cd /opt
           curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.zip
           unzip -q android-ndk-r10e-darwin-x86_64.zip
           
-          # 注入环境变量
+          # 注入 NDK 环境变量到全局，Unity 脚本会自动抓取
           echo "ANDROID_NDK_ROOT=/opt/android-ndk-r10e" >> $GITHUB_ENV
 
-      - name: Build Mono Runtime
+      - name: Build Mono Runtime (编译)
         run: |
-          # 赋予执行权限并直接起飞
           chmod +x external/buildscripts/build_runtime_android.sh
           ./external/buildscripts/build_runtime_android.sh
 
