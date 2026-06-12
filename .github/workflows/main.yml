@@ -1,63 +1,43 @@
-name: Build Unity 5.4 Mono for Android via CentOS
+name: Build Unity 5.4 Mono for Android via macOS
 
 on:
-  workflow_dispatch: # 允许在 GitHub 网页端手动点击按钮触发运行
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest # 宿主机使用最快不排队的 ubuntu-latest
-    
-    # 将整个 Job 原生运行在 CentOS 7 容器内，天然具备 Python 2 环境
-    container:
-      image: centos:7
+    # 使用 macOS 13 环境，对老旧工具链和 32 位交叉编译组件兼容性极佳
+    runs-on: macos-13
 
     steps:
-      - name: Fix CentOS 7 EOL Repos & Install Utilities (修复死源并安装32位环境)
-        run: |
-          # 1. 清理旧源，强行切到阿里云的 CentOS 7 Vault 历史归档源
-          rm -f /etc/yum.repos.d/*.repo
-          curl -o /etc/yum.repos.d/CentOS-Base.repo https://mirrors.aliyun.com/repo/Centos-7.repo
-          
-          # 2. 修改配置文件，全面指向 vault 历史服务器
-          sed -i -e 's/mirrorlist/#mirrorlist/g' \
-                 -e 's/http:\/\/mirror.centos.org/https:\/\/mirrors.aliyun.com/g' \
-                 /etc/yum.repos.d/CentOS-Base.repo
-          
-          # 3. 清理缓存并重建
-          yum clean all
-          yum makecache fast
-          
-          # 4. 安装基础编译工具链
-          # 核心安装 glibc.i686 等 32 位库，确保老旧 NDK 内部的 32 位二进制文件不会报 No such file
-          yum install -y \
-            gawk make gcc gcc-c++ autoconf automake libtool bison gettext perl curl unzip git \
-            glibc.i686 zlib.i686 libstdc++.i686
-
       - name: Checkout Code
-        # 使用官方 Action 拉取代码，它会自动适配 CentOS 容器内的 git 路径
         uses: actions/checkout@v4
 
+      - name: Install Dependencies via Homebrew (安装 macOS 编译依赖)
+        # macOS 默认自带 perl。我们通过 brew 补齐 automake 系列工具
+        run: |
+          brew install autoconf automake libtool gettext pidof
+          # 将 gettext 加入环境变量路径，防止老脚本找不到 msgfmt
+          echo "/usr/local/opt/gettext/bin" >> $GITHUB_PATH
+
       - name: Download and Setup NDK r10e
-        # 手动下载 64 位标准 NDK r10e 并解压，堵死 Unity 脚本内部瞎下载 32 位旧包的后路
+        # 直接下载 macOS 版本的 NDK r10e
         run: |
           mkdir -p /opt
           cd /opt
-          curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip
-          unzip -q android-ndk-r10e-linux-x86_64.zip
+          curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.zip
+          unzip -q android-ndk-r10e-darwin-x86_64.zip
           
-          # 将环境变量注入到 GitHub Actions 全局上下文
+          # 注入环境变量
           echo "ANDROID_NDK_ROOT=/opt/android-ndk-r10e" >> $GITHUB_ENV
 
       - name: Build Mono Runtime
-        # 此时位于拉取出来的 mono 源码根目录，直接执行 Unity 5.4 的标准 Android 编译脚本
         run: |
+          # 赋予执行权限并直接起飞
           chmod +x external/buildscripts/build_runtime_android.sh
           ./external/buildscripts/build_runtime_android.sh
 
       - name: Upload libmono.so Artifact (收割产物)
-        # 编译完成后，将生成的 Android so 库打包上传
         uses: actions/upload-artifact@v4
         with:
           name: unity-5.4-android-mono
-          # Unity 编译输出的标准相对路径
           path: builds/embedruntimes/android/
