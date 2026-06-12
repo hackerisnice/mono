@@ -1,48 +1,49 @@
 name: Build Unity 5.4 Mono for Android via Windows
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许在 GitHub 网页端手动点击按钮触发运行
 
 jobs:
   build:
-    # 切换到 Windows 宿主机，资源充足，秒进构建不排队
+    # 使用 Windows 宿主机，资源极大丰富，点击立刻执行绝不排队
     runs-on: windows-latest
 
     steps:
       - name: Checkout Code
+        # 使用官方 Action 拉取代码
         uses: actions/checkout@v4
 
-      - name: Setup Python 2.7 (Windows 下远古脚本强依赖)
+      - name: Setup Modern Python 3 (彻底抛弃 Python 2)
+        # 直接使用现代化的 Python 3 环境，清爽、无警告、高效率
         uses: actions/setup-python@v5
         with:
-          python-version: '2.7'
+          python-version: '3.x'
 
       - name: Download and Setup NDK r10e (Windows 64位版)
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path "C:\ndk"
           cd C:\ndk
-          # 下载 Windows 64位版本的 NDK r10e
+          # 下载官方专为 Windows 64位系统准备的 NDK r10e
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r10e-windows-x86_64.zip" -OutFile "ndk.zip"
           Expand-Archive -Path "ndk.zip" -DestinationPath "C:\ndk" -Force
           
-          # 将 NDK 路径写入环境变量
+          # 将绝对正确的 NDK 路径注入到 GitHub Actions 全局上下文
           echo "ANDROID_NDK_ROOT=C:\ndk\android-ndk-r10e" >> $env:GITHUB_ENV
 
-      - name: Match Tutorial Modifications (对应教程：不改源码，用命令动态替换参数)
-        shell: bash # 使用 Windows 自带的 bash 环境进行文本处理
+      - name: Match Tutorial Modifications (本地无痕修改编译参数与环境判定)
+        shell: bash # 利用 Windows 自带的 bash 环境进行精准的文本替换
         run: |
-          # 1. 对应教程第 5 步：将 build_runtime_android.sh 中的 -g 调试无缝替换为 -O2 优化
+          # 1. 对应教程第 5 步：将脚本中的 -g 调试无缝替换为 -O2 优化，大幅度缩减编译后的 so 体积
           sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
           
-          # 2. 对应教程第 6 步：强行修改 PrepareAndroidSDK.pm，让它死死咬定 HOST_ENV 为 windows
-          # 这样它就不会去调用 Linux 下死掉的 lwp-download，而是直接去读取我们上面下载好的 ANDROID_NDK_ROOT
+          # 2. 对应教程第 6 步：强行将判定环境涂改为 windows，跳过古老的 Linux 下载逻辑，直接吃本地 NDK
           sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "windows";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$OEXT = "so";/$OEXT = "dll";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$EXEEXT = "";/$EXEEXT = ".exe";/g' external/buildscripts/PrepareAndroidSDK.pm
 
-      - name: Execute Windows Build Suite (启动 MSYS 环境进行最终编译)
-        # 利用 GitHub 预装的 MSYS2 环境，强行注入 Windows 的 NDK 并运行编译
+      - name: Execute Windows Build Suite (调动 MSYS2 链正式开始交叉编译)
+        # 激活 GitHub 预装的 MSYS2 环境，强行继承宿主机的 NDK 环境变量并构建
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -51,15 +52,16 @@ jobs:
             make
             gcc
             bison
-          path-type: inherit # 继承宿主机的环境变量，从而顺利读取到刚才设置的 ANDROID_NDK_ROOT
+          path-type: inherit # 灵魂参数：继承上面的 ANDROID_NDK_ROOT 路径
           run: |
-            # 赋予执行权限
+            # 赋予执行权限并直接起飞
             chmod +x external/buildscripts/build_runtime_android.sh
-            # 摇起 Windows 交叉编译大旗
             ./external/buildscripts/build_runtime_android.sh
 
-      - name: Upload libmono.so Artifact (收割产物)
+      - name: Upload libmono.so Artifact (收割最终产物)
+        # 编译完成后，将生成的 Android libmono.so 打包上传供手机端下载
         uses: actions/upload-artifact@v4
         with:
           name: unity-5.4-android-windows-mono
+          # 根据教程第 10 步，产物会完美躺在这个标准输出路径下
           path: builds/embedruntimes/android/
