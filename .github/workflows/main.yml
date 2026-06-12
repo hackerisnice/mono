@@ -1,46 +1,65 @@
-name: Build Unity 5.4 Mono for Android via macOS
+name: Build Unity 5.4 Mono for Android via Windows
 
 on:
-  workflow_dispatch: # 允许在 GitHub 网页端手动点击按钮触发运行
+  workflow_dispatch:
 
 jobs:
   build:
-    # 使用目前官方主力维护、资源充足且完全不排队的 Intel 架构 macOS 15 镜像
-    runs-on: macos-15-intel
+    # 切换到 Windows 宿主机，资源充足，秒进构建不排队
+    runs-on: windows-latest
 
     steps:
       - name: Checkout Code
-        # 使用官方 Action 拉取代码到工作目录
         uses: actions/checkout@v4
 
-      - name: Install Dependencies via Homebrew (安装 macOS 编译依赖)
-        # 通过 macOS 默认的 Homebrew 快速补齐远古 autotools 编译链
-        run: |
-          brew install autoconf automake libtool gettext pidof
-          # 将 gettext 的二进制路径强行塞进全局环境变量，防止老脚本报错找不到 msgfmt
-          echo "/usr/local/opt/gettext/bin" >> $GITHUB_PATH
+      - name: Setup Python 2.7 (Windows 下远古脚本强依赖)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '2.7'
 
-      - name: Download and Setup NDK r10e (权限无缝版)
-        # 彻底放弃受系统保护的 /opt 目录，改在当前用户拥有 100% 读写权限的 $HOME（家目录）下操作
+      - name: Download and Setup NDK r10e (Windows 64位版)
+        shell: powershell
         run: |
-          mkdir -p $HOME/ndk
-          cd $HOME/ndk
-          curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.zip
-          unzip -q android-ndk-r10e-darwin-x86_64.zip
+          New-Item -ItemType Directory -Force -Path "C:\ndk"
+          cd C:\ndk
+          # 下载 Windows 64位版本的 NDK r10e
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r10e-windows-x86_64.zip" -OutFile "ndk.zip"
+          Expand-Archive -Path "ndk.zip" -DestinationPath "C:\ndk" -Force
           
-          # 将绝对正确的 NDK 路径动态注入到 GitHub Actions 全局上下文
-          echo "ANDROID_NDK_ROOT=$HOME/ndk/android-ndk-r10e" >> $GITHUB_ENV
+          # 将 NDK 路径写入环境变量
+          echo "ANDROID_NDK_ROOT=C:\ndk\android-ndk-r10e" >> $env:GITHUB_ENV
 
-      - name: Build Mono Runtime (核心编译)
-        # 此时位于拉取出来的 mono 源码根目录，直接执行 Unity 5.4 的标准 Android 编译脚本
+      - name: Match Tutorial Modifications (对应教程：不改源码，用命令动态替换参数)
+        shell: bash # 使用 Windows 自带的 bash 环境进行文本处理
         run: |
-          chmod +x external/buildscripts/build_runtime_android.sh
-          ./external/buildscripts/build_runtime_android.sh
+          # 1. 对应教程第 5 步：将 build_runtime_android.sh 中的 -g 调试无缝替换为 -O2 优化
+          sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
+          
+          # 2. 对应教程第 6 步：强行修改 PrepareAndroidSDK.pm，让它死死咬定 HOST_ENV 为 windows
+          # 这样它就不会去调用 Linux 下死掉的 lwp-download，而是直接去读取我们上面下载好的 ANDROID_NDK_ROOT
+          sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "windows";/g' external/buildscripts/PrepareAndroidSDK.pm
+          sed -i 's/$OEXT = "so";/$OEXT = "dll";/g' external/buildscripts/PrepareAndroidSDK.pm
+          sed -i 's/$EXEEXT = "";/$EXEEXT = ".exe";/g' external/buildscripts/PrepareAndroidSDK.pm
+
+      - name: Execute Windows Build Suite (启动 MSYS 环境进行最终编译)
+        # 利用 GitHub 预装的 MSYS2 环境，强行注入 Windows 的 NDK 并运行编译
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            make
+            gcc
+            bison
+          path-type: inherit # 继承宿主机的环境变量，从而顺利读取到刚才设置的 ANDROID_NDK_ROOT
+          run: |
+            # 赋予执行权限
+            chmod +x external/buildscripts/build_runtime_android.sh
+            # 摇起 Windows 交叉编译大旗
+            ./external/buildscripts/build_runtime_android.sh
 
       - name: Upload libmono.so Artifact (收割产物)
-        # 编译完成后，将生成的 Android so 库打包上传供手机端下载
         uses: actions/upload-artifact@v4
         with:
-          name: unity-5.4-android-mono
-          # Unity 编译输出的标准相对路径
+          name: unity-5.4-android-windows-mono
           path: builds/embedruntimes/android/
