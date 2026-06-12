@@ -30,11 +30,6 @@ jobs:
           cd ~/ndk
           curl -L -o android-ndk-r10e-darwin-x86_64.zip \
             "https://dl.google.com/android/repository/android-ndk-r10e-darwin-x86_64.zip"
-
-      - name: Unzip NDK
-        shell: bash
-        run: |
-          cd ~/ndk
           unzip -q android-ndk-r10e-darwin-x86_64.zip
 
       - name: Set ANDROID_NDK_ROOT
@@ -58,18 +53,16 @@ jobs:
         shell: bash
         run: sed -i '' 's/$EXEEXT = "";/$EXEEXT = "";/g' external/buildscripts/PrepareAndroidSDK.pm
 
-      # ---------- Krait 路径修复（使用块标量避免 YAML 语法错误）----------
+      # ---------- Krait 路径修复（你的解法）----------
       - name: Hotfix KRAIT_PATCH_PATH - Remove wrong '../..'
         shell: bash
         run: |
-          # 在所有脚本文件中，将 "CWD/../../androidkraitsignalhandler/build" 替换为正确的 "$PWD/android_krait_signal_handler/build"
           find . -type f \( -name "*.sh" -o -name "*.pm" -o -name "Makefile*" \) -exec sed -i '' \
             's|CWD/\.\./\.\./androidkraitsignalhandler/build|$PWD/android_krait_signal_handler/build|g' {} \;
-          # 如果上述模式不匹配，再尝试直接匹配 KRAIT_PATCH_PATH 赋值行
           find . -type f -exec sed -i '' \
             's|\(KRAIT_PATCH_PATH\s*=\s*\)"CWD/\.\./\.\./androidkraitsignalhandler/build"|\1"$PWD/android_krait_signal_handler/build"|g' {} \;
 
-      # ---------- 可选：统一 NDK 版本为 r10e ----------
+      # ---------- 统一 NDK 版本为 r10e ----------
       - name: Hotfix NDK version - Force r10e instead of r13b
         shell: bash
         run: |
