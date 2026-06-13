@@ -1,11 +1,10 @@
 name: Build Unity 5.4 Mono for Android via Linux (Ubuntu Native)
 
 on:
-  workflow_dispatch: # 允许在 GitHub 网页端手动点击按钮触发运行
+  workflow_dispatch:
 
 jobs:
   build:
-    # 使用最新、资源极大丰富、秒进构建不排队的 Linux 宿主机
     runs-on: ubuntu-latest
 
     steps:
@@ -21,42 +20,37 @@ jobs:
       - name: Install Linux Build Utilities & Multilib
         run: |
           sudo apt-get update
-          # 安装 gcc-9-multilib 系列，提供 64 位系统原生的 32 位底层汇编/链接能力
           sudo apt-get install -y \
             build-essential autoconf automake libtool bison gettext perl curl unzip git \
             gcc-9 g++-9 gcc-9-multilib g++-9-multilib lib32z1
 
       - name: Setup GCC 9 Alternative
-        # 强制将系统默认编译器切回兼容远古代码的 GCC 9 模式
         run: |
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 100
-          gcc --version
 
-      # ---------- 下载并配置 Linux 版 NDK r10e ----------
-      - name: Download and Setup NDK r10e (Linux 64-bit)
+      # ---------- 下载并配置 Linux 版 NDK r10e（含破解死循环魔法） ----------
+      - name: Download and Setup NDK r10e
         run: |
-          # 在当前用户拥有 100% 读写权限的 $HOME 目录下创建并解压
           mkdir -p $HOME/ndk
           cd $HOME/ndk
           curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip
           unzip -q android-ndk-r10e-linux-x86_64.zip
           
-          # 将绝对正确的 NDK 路径注入全局环境变量
+          # 【核心破解死循环】：强行篡改 NDK 的内部身份证！
+          # 直接抹除 r10e-rc4 (64-bit)，写入纯净的 r10e，完美欺骗 Unity 检测脚本
+          echo "r10e" > android-ndk-r10e/RELEASE.TXT
+          
+          # 注入环境变量
           echo "ANDROID_NDK_ROOT=$HOME/ndk/android-ndk-r10e" >> $GITHUB_ENV
 
-      # ---------- 全套硬核 Patch 补丁（包含拦截死循环） ----------
+      # ---------- 全套硬核 Patch 补丁 ----------
       - name: Apply Comprehensive Patches
         run: |
-          # 【核心修复】强行打破 NDK 版本校验死循环！
-          # 在 VerifyAndroidNDK 函数头部直接插入 return 1，无条件放行，闭开它的内鬼重试逻辑
-          sed -i 's/sub VerifyAndroidNDK/sub VerifyAndroidNDK { return 1; } sub Old_VerifyAndroidNDK/g' external/buildscripts/PrepareAndroidSDK.pm
-          sed -i 's/if ($ndk_version ne $expected_version)/if (0)/g' external/buildscripts/PrepareAndroidSDK.pm
-
-          # 1. 教程级修改：替换 -g 为 -O2 优化体积
+          # 1. 替换 -g 为 -O2 优化体积
           sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
           
-          # 2. 教程级修改：强制死锁环境判定
+          # 2. 强制死锁环境判定
           sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "linux";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$OEXT = "so";/$OEXT = "so";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$EXEEXT = "";/$EXEEXT = "";/g' external/buildscripts/PrepareAndroidSDK.pm
@@ -67,7 +61,7 @@ jobs:
           find . -type f -exec sed -i \
             's|\(KRAIT_PATCH_PATH\s*=\s*\)"CWD/\.\./\.\./androidkraitsignalhandler/build"|\1"$PWD/android_krait_signal_handler/build"|g' {} \;
           
-          # 4. 统一 NDK 版本为 r10e
+          # 4. 统一 NDK 预期版本为 r10e
           sed -i 's/GetAndroidSDK(undef, undef, "r13b")/GetAndroidSDK(undef, undef, "r10e")/g' \
             external/buildscripts/PrepareAndroidSDK.pm
           
@@ -101,9 +95,7 @@ jobs:
       # ---------- 执行编译 ----------
       - name: Execute Linux Build Suite
         run: |
-          # 提前创建好输出目录
           mkdir -p builds/embedruntimes/android
-          
           chmod +x external/buildscripts/build_runtime_android.sh
           ./external/buildscripts/build_runtime_android.sh
 
@@ -112,5 +104,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: unity-5.4-android-linux-mono
-          # 抓取整个 builds 文件夹，确保任何编译生成的 .so 变体一个不落
           path: builds/
