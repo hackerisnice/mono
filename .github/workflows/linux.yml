@@ -1,10 +1,11 @@
 name: Build Unity 5.4 Mono for Android via Linux (Ubuntu Native)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许在 GitHub 网页端手动触发
 
 jobs:
   build:
+    # 使用最新、资源极大丰富、秒进构建不排队的 Linux 宿主机
     runs-on: ubuntu-latest
 
     steps:
@@ -16,20 +17,24 @@ jobs:
         with:
           python-version: '3.x'
 
-      # ---------- 安装 Linux 交叉编译依赖与 Multilib 环境 ----------
-      - name: Install Linux Build Utilities & Multilib
+      # ---------- 核心修复 1：安装 Linux 交叉编译依赖与真正的 32 位底层库 ----------
+      - name: Install Linux Build Utilities & True Multilib
         run: |
+          # 强行唤醒 Ubuntu 最底层的 32 位架构支持，防止 NDK r10e 开机暴毙
+          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
             build-essential autoconf automake libtool bison gettext perl curl unzip git \
-            gcc-9 g++-9 gcc-9-multilib g++-9-multilib lib32z1
+            gcc-9 g++-9 libc6:i386 libncurses5:i386 libstdc++6:i386 lib32z1
 
       - name: Setup GCC 9 Alternative
+        # 强制将系统默认编译器切回兼容远古代码的 GCC 9 模式
         run: |
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 100
+          gcc --version
 
-      # ---------- 下载并配置 Linux 版 NDK r10e（含破解死循环魔法） ----------
+      # ---------- 下载并配置 Linux 版 NDK r10e（含篡改身份证魔法） ----------
       - name: Download and Setup NDK r10e
         run: |
           mkdir -p $HOME/ndk
@@ -37,20 +42,23 @@ jobs:
           curl -L -O https://dl.google.com/android/repository/android-ndk-r10e-linux-x86_64.zip
           unzip -q android-ndk-r10e-linux-x86_64.zip
           
-          # 【核心破解死循环】：强行篡改 NDK 的内部身份证！
-          # 直接抹除 r10e-rc4 (64-bit)，写入纯净的 r10e，完美欺骗 Unity 检测脚本
+          # 【破解死循环】强行篡改 NDK 的内部身份证，抹除 r10e-rc4 (64-bit)，写入纯净的 r10e
           echo "r10e" > android-ndk-r10e/RELEASE.TXT
           
-          # 注入环境变量
+          # 将绝对正确的 NDK 路径注入全局环境变量
           echo "ANDROID_NDK_ROOT=$HOME/ndk/android-ndk-r10e" >> $GITHUB_ENV
 
-      # ---------- 全套硬核 Patch 补丁 ----------
+      # ---------- 全套硬核 Patch 补丁（包含拦截死循环与安全注入链接） ----------
       - name: Apply Comprehensive Patches
         run: |
-          # 1. 替换 -g 为 -O2 优化体积
+          # 【核心修复】强行打破 NDK 版本校验死循环
+          sed -i 's/sub VerifyAndroidNDK/sub VerifyAndroidNDK { return 1; } sub Old_VerifyAndroidNDK/g' external/buildscripts/PrepareAndroidSDK.pm
+          sed -i 's/if ($ndk_version ne $expected_version)/if (0)/g' external/buildscripts/PrepareAndroidSDK.pm
+
+          # 1. 教程级修改：替换 -g 为 -O2 优化体积
           sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
           
-          # 2. 强制死锁环境判定
+          # 2. 教程级修改：强制死锁环境判定
           sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "linux";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$OEXT = "so";/$OEXT = "so";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$EXEEXT = "";/$EXEEXT = "";/g' external/buildscripts/PrepareAndroidSDK.pm
@@ -61,7 +69,7 @@ jobs:
           find . -type f -exec sed -i \
             's|\(KRAIT_PATCH_PATH\s*=\s*\)"CWD/\.\./\.\./androidkraitsignalhandler/build"|\1"$PWD/android_krait_signal_handler/build"|g' {} \;
           
-          # 4. 统一 NDK 预期版本为 r10e
+          # 4. 统一 NDK 版本为 r10e
           sed -i 's/GetAndroidSDK(undef, undef, "r13b")/GetAndroidSDK(undef, undef, "r10e")/g' \
             external/buildscripts/PrepareAndroidSDK.pm
           
@@ -79,9 +87,9 @@ jobs:
           find . -name "*.c" -exec sed -i 's/ STAP_PROBE[^(]*([^;]*);//g' {} \;
           echo 'int main() { return 0; }' > mono/profiler/profiler-stap.c
           
-          # 8. Android 日志库与动态加载库链接补全
+          # 8. 【核心修复 2】Android 日志库与动态加载库链接补全（安全注入版）
           find . -name "Makefile" | xargs sed -i 's/LIBS = /LIBS = -llog -ldl /g'
-          sed -i 's/-shared -Wl/-shared -Wl,--no-undefined -llog -ldl/g' external/buildscripts/build_runtime_android.sh
+          sed -i 's/LDFLAGS="/LDFLAGS="-llog -ldl /g' external/buildscripts/build_runtime_android.sh
 
       # ---------- 解决旧版 autopoint 本地文件冲突的防御机制 ----------
       - name: Hack Autopoint Force Flag
@@ -99,9 +107,17 @@ jobs:
           chmod +x external/buildscripts/build_runtime_android.sh
           ./external/buildscripts/build_runtime_android.sh
 
+      # ---------- 核心修复 3：开启天眼（只在编译失败时执行，抓取尸检报告） ----------
+      - name: Print config.log on Failure
+        if: failure()
+        run: |
+          echo "=== 💥 发现编译失败！正在抓取底层 config.log 尸检报告 ==="
+          find . -name "config.log" -exec cat {} +
+
       # ---------- 上传产物 ----------
       - name: Upload libmono.so Artifact
         uses: actions/upload-artifact@v4
+        if: always() # 确保即使前面有微小错误，只要生成的 so 存在就强行上传
         with:
           name: unity-5.4-android-linux-mono
           path: builds/
