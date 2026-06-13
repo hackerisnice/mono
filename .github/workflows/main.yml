@@ -1,4 +1,4 @@
-name: Build Unity 5.4 Mono for Android via Windows (Ultimate)
+name: Build Unity 5.4 Mono for Android via Windows (Ultimate Fixed)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # ---------- 核心修复 1：阻断 Windows Git 自动转 CRLF，保护 Bash 脚本 ----------
+      # ---------- 阻断 Windows Git 自动转 CRLF，保护 Bash 脚本 ----------
       - name: Set Git core.autocrlf to false
         run: git config --global core.autocrlf false
 
@@ -29,21 +29,25 @@ jobs:
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r10e-windows-x86_64.zip" -OutFile "ndk.zip"
           Expand-Archive -Path "ndk.zip" -DestinationPath "." -Force
           
-          # 核心修复 2：同步 Linux 的“篡改身份证”魔法，直接涂改为 r10e
+          # 同步 Linux 的“篡改身份证”魔法，直接涂改为 r10e
           echo "r10e" > android-ndk-r10e\RELEASE.TXT
           
           $NdkAbsolutePath = Resolve-Path "android-ndk-r10e"
           echo "ANDROID_NDK_ROOT=$NdkAbsolutePath" >> $env:GITHUB_ENV
 
-      # ---------- 执行编译（将 Patch 操作全部转入 MSYS2 内部，保障绝对兼容） ----------
-      - name: Execute Windows Build Suite
+      # ---------- 【核心修复】分离的 MSYS2 环境配置步 ----------
+      - name: Setup MSYS2 Environment
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: false
-          # 核心修复 3：补齐所需的 dos2unix、perl 和 autopoint(gettext-devel) 工具
+          # 补齐所需的 dos2unix、perl 和 autopoint(gettext-devel) 工具
           install: make gcc bison gettext-devel perl dos2unix patch
           path-type: inherit
+
+      # ---------- 【核心修复】分离的编译步，必须指定 shell: msys2 {0} ----------
+      - name: Execute Windows Build Suite
+        shell: msys2 {0}
         run: |
           # 1. 强行把所有核心脚本洗白为标准的 Linux LF 换行符，防 \r 闪退
           find . -type f \( -name "*.sh" -o -name "*.pm" -o -name "*.pl" \) -exec dos2unix {} \;
@@ -52,7 +56,7 @@ jobs:
           sed -i 's/sub VerifyAndroidNDK/sub VerifyAndroidNDK { return 1; } sub Old_VerifyAndroidNDK/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/if ($ndk_version ne $expected_version)/if (0)/g' external/buildscripts/PrepareAndroidSDK.pm
 
-          # 3. 教程级修改：体积优化与环境欺骗
+          # 3. 体积优化与环境欺骗
           sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
           sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "windows";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$OEXT = "so";/$OEXT = "dll";/g' external/buildscripts/PrepareAndroidSDK.pm
@@ -74,7 +78,7 @@ jobs:
           find . -name "*.c" -exec sed -i 's/ STAP_PROBE[^(]*([^;]*);//g' {} \;
           echo 'int main() { return 0; }' > mono/profiler/profiler-stap.c
           find . -name "Makefile" | xargs sed -i 's/LIBS = /LIBS = -llog -ldl /g'
-          sed -i 's/-shared -Wl/-shared -Wl,--no-undefined -llog -ldl/g' external/buildscripts/build_runtime_android.sh
+          sed -i 's/LDFLAGS="/LDFLAGS="-llog -ldl /g' external/buildscripts/build_runtime_android.sh
 
           # 6. 伪装 autopoint，强注 --force 参数防止老配置冲突
           mkdir -p ~/fake_bin
@@ -91,9 +95,18 @@ jobs:
           echo "=== Patching Done. Starting Unity Cross-Compile ==="
           ./external/buildscripts/build_runtime_android.sh
 
+      # ---------- 开启天眼：只在编译失败时执行，抓取底层报错 ----------
+      - name: Print config.log on Failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== 💥 发现编译失败！正在抓取底层 config.log 尸检报告 ==="
+          find . -name "config.log" -exec cat {} +
+
       # ---------- 上传产物 ----------
       - name: Upload libmono.so Artifact
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: unity-5.4-android-windows-mono
           path: builds/
