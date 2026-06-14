@@ -1,14 +1,14 @@
 name: Build Unity 5.4 Mono for Android via Windows (Ultimate Fixed)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许在 GitHub 网页端手动触发
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-      # ---------- 阻断 Windows Git 自动转 CRLF，保护 Bash 脚本 ----------
+      # ---------- 阻断 Windows Git 自动转 CRLF，保护 Bash 脚本不闪退 ----------
       - name: Set Git core.autocrlf to false
         run: git config --global core.autocrlf false
 
@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.x'
 
-      # ---------- NDK 安装与身份证篡改 ----------
+      # ---------- NDK 安装与身份证篡改 (ASCII 纯净编码版) ----------
       - name: Download and Setup NDK r10e (Windows 64位版)
         shell: powershell
         run: |
@@ -29,65 +29,70 @@ jobs:
           Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r10e-windows-x86_64.zip" -OutFile "ndk.zip"
           Expand-Archive -Path "ndk.zip" -DestinationPath "." -Force
           
-          # 同步 Linux 的“篡改身份证”魔法，直接涂改为 r10e
-          echo "r10e" > android-ndk-r10e\RELEASE.TXT
+          # 【核心修复】：强行指定 ASCII 编码写入，绝不让 PowerShell 混入 UTF-16 BOM 头！
+          Set-Content -Path "android-ndk-r10e\RELEASE.TXT" -Value "r10e" -Encoding Ascii
           
+          # 获取绝对路径注入环境变量
           $NdkAbsolutePath = Resolve-Path "android-ndk-r10e"
           echo "ANDROID_NDK_ROOT=$NdkAbsolutePath" >> $env:GITHUB_ENV
 
-      # ---------- 【核心修复】分离的 MSYS2 环境配置步 ----------
+      # ---------- MSYS2 交叉编译环境配置 ----------
       - name: Setup MSYS2 Environment
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: false
-          # 补齐所需的 dos2unix、perl 和 autopoint(gettext-devel) 工具
+          # 补齐必备的 32/64 位多架构链接组件与文件转换工具
           install: make gcc bison gettext-devel perl dos2unix patch
           path-type: inherit
 
-      # ---------- 【核心修复】分离的编译步，必须指定 shell: msys2 {0} ----------
+      # ---------- 执行编译（移交至 MSYS2 内部） ----------
       - name: Execute Windows Build Suite
         shell: msys2 {0}
         run: |
-          # 1. 强行把所有核心脚本洗白为标准的 Linux LF 换行符，防 \r 闪退
+          # 1. 强行把所有核心脚本洗白为标准的 Linux LF 换行符
           find . -type f \( -name "*.sh" -o -name "*.pm" -o -name "*.pl" \) -exec dos2unix {} \;
 
           # 2. 强行打破 NDK 版本校验死循环
           sed -i 's/sub VerifyAndroidNDK/sub VerifyAndroidNDK { return 1; } sub Old_VerifyAndroidNDK/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/if ($ndk_version ne $expected_version)/if (0)/g' external/buildscripts/PrepareAndroidSDK.pm
 
-          # 3. 体积优化与环境欺骗
+          # 3. 体积优化与强行欺骗系统环境为 windows
           sed -i 's/-g /-O2 /g' external/buildscripts/build_runtime_android.sh
           sed -i 's/$HOST_ENV = "linux";/$HOST_ENV = "windows";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$OEXT = "so";/$OEXT = "dll";/g' external/buildscripts/PrepareAndroidSDK.pm
           sed -i 's/$EXEEXT = "";/$EXEEXT = ".exe";/g' external/buildscripts/PrepareAndroidSDK.pm
 
-          # 4. Krait 路径与统一 NDK 版本
+          # 4. Krait 路径修复与统一 NDK 预期版本
           find . -type f \( -name "*.sh" -o -name "*.pm" -o -name "Makefile*" \) -exec sed -i \
             's|CWD/\.\./\.\./androidkraitsignalhandler/build|$PWD/android_krait_signal_handler/build|g' {} \;
           sed -i 's/GetAndroidSDK(undef, undef, "r13b")/GetAndroidSDK(undef, undef, "r10e")/g' \
             external/buildscripts/PrepareAndroidSDK.pm
 
-          # 5. 平台宏、链接与探针移除修复
+          # 5. 平台宏、探针移除与安全链接注入
           find . -name "*.h" -o -name "*.c" | xargs sed -i 's/#ifdef _WIN32/#if defined(_WIN32) \&\& !defined(TARGET_ANDROID)/g'
           echo '#define HOST_ANDROID 1' >> mono/utils/mono-publib.h
           echo '#define TARGET_ANDROID 1' >> mono/utils/mono-publib.h
+          
           find . -name "Makefile" -o -name "*.mk" | xargs sed -i 's/-lpthread//g'
           sed -i 's/-lpthread//g' external/buildscripts/build_runtime_android.sh
+          
           find . -name "*.c" -exec sed -i 's/#include <sys\/sdt.h>/\/* #include <sys\/sdt.h> *\//g' {} \;
           find . -name "*.c" -exec sed -i 's/ STAP_PROBE[^(]*([^;]*);//g' {} \;
           echo 'int main() { return 0; }' > mono/profiler/profiler-stap.c
+          
           find . -name "Makefile" | xargs sed -i 's/LIBS = /LIBS = -llog -ldl /g'
+          # 【核心修复】：同步 Linux 篇的经验，安全将依赖注入 LDFLAGS，避免破坏编译器语法
           sed -i 's/LDFLAGS="/LDFLAGS="-llog -ldl /g' external/buildscripts/build_runtime_android.sh
 
-          # 6. 伪装 autopoint，强注 --force 参数防止老配置冲突
+          # 6. 伪装 autopoint 并强注 --force，扫清国际化文本冲突
           mkdir -p ~/fake_bin
           echo '#!/bin/bash' > ~/fake_bin/autopoint
           echo '/usr/bin/autopoint --force "$@"' >> ~/fake_bin/autopoint
           chmod +x ~/fake_bin/autopoint
           export PATH="$HOME/fake_bin:$PATH"
 
-          # 7. 路径转换与正式起飞
+          # 7. 洗白 Windows 盘符并正式起飞！
           export ANDROID_NDK_ROOT=$(cygpath -u "$ANDROID_NDK_ROOT")
           mkdir -p builds/embedruntimes/android
           chmod +x external/buildscripts/build_runtime_android.sh
@@ -95,7 +100,7 @@ jobs:
           echo "=== Patching Done. Starting Unity Cross-Compile ==="
           ./external/buildscripts/build_runtime_android.sh
 
-      # ---------- 开启天眼：只在编译失败时执行，抓取底层报错 ----------
+      # ---------- 开启天眼（捕捉底层尸检报告） ----------
       - name: Print config.log on Failure
         if: failure()
         shell: bash
@@ -103,7 +108,7 @@ jobs:
           echo "=== 💥 发现编译失败！正在抓取底层 config.log 尸检报告 ==="
           find . -name "config.log" -exec cat {} +
 
-      # ---------- 上传产物 ----------
+      # ---------- 全局捕获产物 ----------
       - name: Upload libmono.so Artifact
         uses: actions/upload-artifact@v4
         if: always()
