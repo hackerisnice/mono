@@ -2,14 +2,14 @@ name: Build Mono 5.4
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build-mono:
     runs-on: ubuntu-latest
-    # 改用 ubuntu:18.04
     container:
+      # 使用 Ubuntu 18.04 容器，环境和旧版 GCC/Python 完美契合 Mono 5.4
       image: ubuntu:18.04
 
     steps:
@@ -34,25 +34,32 @@ jobs:
             ca-certificates
           update-ca-certificates
 
-      - name: Checkout Mono 5.4
+      - name: Checkout Mono 5.4 and Submodules
         run: |
+          # 关键：修复 GitHub 已废弃的 git:// 协议，自动重定向为 https://
+          git config --global url."https://github.com/".insteadOf "git://github.com/"
+          
+          # 克隆 Mono 5.4 源码及所有子模块
           git clone --depth 1 --branch mono-5.4.1.7 https://github.com/mono/mono.git mono-src
           cd mono-src
           git submodule update --init --recursive
 
-      - name: Configure and Build
+      - name: Build and Install Mono
         working-directory: mono-src
         run: |
+          # 配置安装路径为 /opt/mono-5.4
           ./autogen.sh --prefix=/opt/mono-5.4 --disable-nls
+          
+          # 并发编译并安装
           make -j$(nproc)
           make install
 
-      - name: Tar Artifacts
+      - name: Package Artifact
         run: |
-          tar -czf mono-5.4-linux-x64.tar.gz -C /opt/mono-5.4 .
+          tar -czf mono-5.4.1.7-linux-x64.tar.gz -C /opt/mono-5.4 .
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mono-5.4-linux-x64
-          path: mono-5.4-linux-x64.tar.gz
+          name: mono-5.4.1.7-linux-x64
+          path: mono-5.4.1.7-linux-x64.tar.gz
