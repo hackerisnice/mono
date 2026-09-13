@@ -11,23 +11,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 在宿主机先全局配置 git:// 转换为 https://
       - name: Configure Git Protocol Globally
         run: |
           git config --global url."https://github.com/".insteadOf "git://github.com/"
 
-      # 2. 拉取当前仓库主代码
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # 3. 递归拉取子模块（利用宿主机的较新 Git 和刚才配置的重定向）
       - name: Update Submodules
         run: |
           git submodule update --init --recursive
 
-      # 4. 启动 Ubuntu 18.04 Docker 容器进行编译与打包（不会触发 Node/glibc 冲突）
       - name: Build Mono inside Ubuntu 18.04 Container
         run: |
           docker run --rm \
@@ -37,9 +33,10 @@ jobs:
             bash -c "
               set -e
               
-              # 安装编译所需的所有依赖
               apt-get update
               apt-get install -y \
+                pkg-config \
+                zlib1g-dev \
                 autoconf \
                 automake \
                 libtool \
@@ -55,16 +52,13 @@ jobs:
                 liblzma-dev \
                 ca-certificates
               
-              # 开始构建与安装
               ./autogen.sh --disable-nls --prefix=/opt/mono
               make -j\$(nproc)
               make install
               
-              # 打包编译好的产物到当前工作空间
               tar -czf /workspace/mono-unity-5.4-linux-x64.tar.gz -C /opt/mono .
             "
 
-      # 5. 上传生成的产物
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
