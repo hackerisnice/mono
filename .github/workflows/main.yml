@@ -52,8 +52,16 @@ jobs:
                 bison \
                 liblzma-dev \
                 ca-certificates
-              
-              ./autogen.sh --disable-nls --prefix=/opt/mono
+
+              # 显式指定 64 位 multiarch 的 pkg-config 路径
+              export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig:/usr/lib/pkgconfig:\$PKG_CONFIG_PATH
+
+              # 使用 embedded glib (Unity Mono 官方推荐构建模式)
+              ./autogen.sh \
+                --disable-nls \
+                --prefix=/opt/mono \
+                --with-glib=embedded
+
               make -j\$(nproc)
               make install
               
