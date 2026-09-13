@@ -53,15 +53,19 @@ jobs:
                 liblzma-dev \
                 ca-certificates
 
-              # 显式指定 64 位 multiarch 的 pkg-config 路径
               export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig:/usr/lib/pkgconfig:\$PKG_CONFIG_PATH
 
-              # 使用 embedded glib (Unity Mono 官方推荐构建模式)
+              # Unity Mono 标准构建参数：禁用 NLS、使用 embedded glib 并指定 SGen GC
               ./autogen.sh \
-                --disable-nls \
                 --prefix=/opt/mono \
-                --with-glib=embedded
+                --disable-nls \
+                --with-glib=embedded \
+                --with-gc=sgen
 
+              # 1. 先单线程编译 libgc，避免旧版 libgc 的多线程构建 race condition
+              make -C libgc -j1
+              
+              # 2. 剩余部分使用多核满速并行编译
               make -j\$(nproc)
               make install
               
